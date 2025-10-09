@@ -6,17 +6,32 @@ Author: Dr. Jorge C. Lucero
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import numpy as np
 import librosa
 import parselmouth
 from parselmouth.praat import call
 import io
 import base64
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List
 import tempfile
 import os
 from pydantic import BaseModel
+from datetime import datetime
+import logging
+import traceback
+
+# PDF generation imports
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -43,6 +58,22 @@ class AnalysisResult(BaseModel):
     interpretation: Dict[str, Any]
     metadata: Dict[str, Any]
 
+class FeedbackSubmission(BaseModel):
+    """Model for user feedback"""
+    rating: int
+    comment: Optional[str] = None
+    feature_request: Optional[str] = None
+    user_type: Optional[str] = None
+    timestamp: Optional[str] = None
+
+class PDFRequest(BaseModel):
+    """Model for PDF generation request"""
+    analysis_results: AnalysisResult
+    patient_info: Optional[Dict[str, str]] = None
+
+# In-memory feedback storage (replace with database in production)
+feedback_storage: List[Dict] = []
+
 @app.get("/")
 async def root():
     """API health check and info"""
@@ -58,12 +89,13 @@ async def root():
 async def analyze_voice(file: UploadFile = File(...)):
     """
     Analyze voice recording and return acoustic parameters
-    """
-    import logging
-    import traceback
     
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    Parameters:
+    - file: Audio file (WAV, MP3, M4A)
+    
+    Returns:
+    - JSON with F0, jitter, shimmer, HNR, and clinical interpretation
+    """
     
     # Validate file
     if not file.content_type.startswith('audio'):
@@ -122,7 +154,8 @@ async def analyze_voice(file: UploadFile = File(...)):
             metadata={
                 "filename": file.filename,
                 "duration": round(duration, 2),
-                "sample_rate": int(sample_rate)
+                "sample_rate": int(sample_rate),
+                "analysis_date": datetime.now().isoformat()
             }
         )
         
@@ -135,14 +168,276 @@ async def analyze_voice(file: UploadFile = File(...)):
             os.unlink(tmp_path)
         
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
-    
 
-def analyze_f0(sound: parselmouth.Sound) -> Dict[str, float]:
+@app.post("/generate-pdf")
+async def generate_pdf_report(request: PDFRequest):
+    """
+    Generate PDF report from analysis results
+    
+    Parameters:
+    - request: PDFRequest with analysis results and optional patient info
+    
+    Returns:
+    - PDF file as downloadable stream
+    """
+    try:
+        logger.info("Generating PDF report...")
+        
+        # Create PDF in memory
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        
+        # Container for PDF elements
+        elements = []
+        
+        # Styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#6366f1'),
+            spaceAfter=30,
+            alignment=TA_CENTER
+        )
+        
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=16,
+            textColor=colors.HexColor('#4f46e5'),
+            spaceAfter=12,
+            spaceBefore=12
+        )
+        
+        # Title
+        elements.append(Paragraph("Voice Analysis Report", title_style))
+        elements.append(Spacer(1, 0.2*inch))
+        
+        # Metadata
+        metadata = request.analysis_results.metadata
+        elements.append(Paragraph("Recording Information", heading_style))
+        
+        info_data = [
+            ["Filename:", metadata.get('filename', 'N/A')],
+            ["Duration:", f"{metadata.get('duration', 0)} seconds"],
+            ["Sample Rate:", f"{metadata.get('sample_rate', 0)} Hz"],
+            ["Analysis Date:", metadata.get('analysis_date', datetime.now().isoformat())[:19].replace('T', ' ')],
+        ]
+        
+        # Add patient info if provided
+        if request.patient_info:
+            elements.append(Spacer(1, 0.2*inch))
+            elements.append(Paragraph("Patient Information", heading_style))
+            patient_data = [[k.replace('_', ' ').title() + ':', v] for k, v in request.patient_info.items()]
+            info_data.extend(patient_data)
+        
+        info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+        info_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 0.3*inch))
+        
+        # Acoustic Parameters
+        elements.append(Paragraph("Acoustic Measurements", heading_style))
+        
+        results = request.analysis_results
+        
+        # F0
+        f0_data = [
+            ["Parameter", "Value", "Status"],
+            ["Mean F0", f"{results.f0.get('mean', 0):.1f} Hz", results.f0.get('status', 'N/A')],
+            ["F0 Range", f"{results.f0.get('min', 0):.1f} - {results.f0.get('max', 0):.1f} Hz", ""],
+            ["F0 Std Dev", f"{results.f0.get('std', 0):.1f} Hz", ""],
+        ]
+        
+        # Jitter
+        jitter_data = [
+            ["Jitter (Local)", f"{results.jitter.get('local', 0):.4f}", results.jitter.get('status', 'N/A')],
+            ["Jitter (%)", f"{results.jitter.get('percent', 0):.2f}%", ""],
+            ["RAP", f"{results.jitter.get('rap', 0):.4f}", ""],
+        ]
+        
+        # Shimmer
+        shimmer_data = [
+            ["Shimmer (Local)", f"{results.shimmer.get('local', 0):.4f}", results.shimmer.get('status', 'N/A')],
+            ["Shimmer (%)", f"{results.shimmer.get('percent', 0):.2f}%", ""],
+            ["APQ3", f"{results.shimmer.get('apq3', 0):.4f}", ""],
+        ]
+        
+        # HNR
+        hnr_data = [
+            ["Mean HNR", f"{results.hnr.get('mean', 0):.1f} dB", results.hnr.get('status', 'N/A')],
+            ["HNR Range", f"{results.hnr.get('min', 0):.1f} - {results.hnr.get('max', 0):.1f} dB", ""],
+        ]
+        
+        # Combine all measurements
+        all_data = [["Parameter", "Value", "Status"]] + f0_data[1:] + jitter_data + shimmer_data + hnr_data
+        
+        measurements_table = Table(all_data, colWidths=[2*inch, 1.5*inch, 2.5*inch])
+        measurements_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 11),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+        ]))
+        elements.append(measurements_table)
+        elements.append(Spacer(1, 0.3*inch))
+        
+        # Clinical Interpretation
+        elements.append(Paragraph("Clinical Interpretation", heading_style))
+        
+        interpretation = results.interpretation
+        elements.append(Paragraph(
+            f"<b>Overall Assessment:</b> {interpretation.get('overall_assessment', 'N/A')}", 
+            styles['Normal']
+        ))
+        elements.append(Spacer(1, 0.1*inch))
+        
+        elements.append(Paragraph(
+            f"<b>Severity:</b> {interpretation.get('severity', 'N/A').upper()}", 
+            styles['Normal']
+        ))
+        elements.append(Spacer(1, 0.2*inch))
+        
+        # Concerns
+        if interpretation.get('concerns'):
+            elements.append(Paragraph("<b>Clinical Concerns:</b>", styles['Normal']))
+            for concern in interpretation['concerns']:
+                elements.append(Paragraph(f"• {concern}", styles['Normal']))
+            elements.append(Spacer(1, 0.2*inch))
+        
+        # Recommendations
+        if interpretation.get('recommendations'):
+            elements.append(Paragraph("<b>Recommendations:</b>", styles['Normal']))
+            for rec in interpretation['recommendations']:
+                elements.append(Paragraph(f"• {rec}", styles['Normal']))
+            elements.append(Spacer(1, 0.2*inch))
+        
+        # Clinical Action
+        elements.append(Paragraph(
+            f"<b>Suggested Action:</b> {interpretation.get('clinical_action', 'N/A')}", 
+            styles['Normal']
+        ))
+        
+        # Footer
+        elements.append(Spacer(1, 0.5*inch))
+        elements.append(Paragraph(
+            "<i>This report was generated by VoiceFlow Tools - Free Voice Analysis for Clinicians</i>",
+            ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+        ))
+        elements.append(Paragraph(
+            "<i>Created by Dr. Jorge C. Lucero | For clinical correlation and professional use only</i>",
+            ParagraphStyle('Footer2', parent=styles['Normal'], fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+        ))
+        
+        # Build PDF
+        doc.build(elements)
+        buffer.seek(0)
+        
+        logger.info("PDF generated successfully")
+        
+        # Return as downloadable file
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=voice_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"PDF generation error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+
+@app.post("/feedback")
+async def submit_feedback(feedback: FeedbackSubmission):
+    """
+    Submit user feedback
+    
+    Parameters:
+    - feedback: FeedbackSubmission with rating and optional comments
+    
+    Returns:
+    - Confirmation message
+    """
+    try:
+        # Add timestamp if not provided
+        if not feedback.timestamp:
+            feedback.timestamp = datetime.now().isoformat()
+        
+        # Store feedback (in production, save to database)
+        feedback_data = feedback.dict()
+        feedback_storage.append(feedback_data)
+        
+        logger.info(f"Feedback received: Rating {feedback.rating}/5")
+        if feedback.comment:
+            logger.info(f"Comment: {feedback.comment}")
+        if feedback.feature_request:
+            logger.info(f"Feature request: {feedback.feature_request}")
+        
+        return {
+            "status": "success",
+            "message": "Thank you for your feedback!",
+            "feedback_id": len(feedback_storage)
+        }
+        
+    except Exception as e:
+        logger.error(f"Feedback submission error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to submit feedback")
+
+@app.get("/feedback/stats")
+async def get_feedback_stats():
+    """
+    Get feedback statistics (for admin use)
+    
+    Returns:
+    - Summary of feedback data
+    """
+    if not feedback_storage:
+        return {
+            "total_feedback": 0,
+            "average_rating": 0,
+            "ratings_distribution": {}
+        }
+    
+    ratings = [f['rating'] for f in feedback_storage]
+    
+    return {
+        "total_feedback": len(feedback_storage),
+        "average_rating": round(sum(ratings) / len(ratings), 2),
+        "ratings_distribution": {
+            str(i): ratings.count(i) for i in range(1, 6)
+        },
+        "recent_comments": [
+            {
+                "rating": f['rating'],
+                "comment": f.get('comment', ''),
+                "timestamp": f.get('timestamp', '')
+            }
+            for f in feedback_storage[-10:]  # Last 10 feedbacks
+        ]
+    }
+
+# Analysis helper functions (keep existing code)
+def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Extract fundamental frequency statistics"""
     try:
         pitch = sound.to_pitch()
         f0_values = pitch.selected_array['frequency']
-        f0_values = f0_values[f0_values > 0]  # Remove unvoiced segments
+        f0_values = f0_values[f0_values > 0]
         
         if len(f0_values) == 0:
             return {
@@ -165,18 +460,12 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, float]:
     except Exception as e:
         return {"error": str(e), "status": "Analysis failed"}
 
-def analyze_jitter(sound: parselmouth.Sound) -> Dict[str, float]:
+def analyze_jitter(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Calculate jitter parameters"""
     try:
         point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
-        
-        # Local jitter
         local_jitter = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
-        
-        # Jitter percent
         jitter_percent = local_jitter * 100
-        
-        # RAP
         rap = call(point_process, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
         
         return {
@@ -188,19 +477,13 @@ def analyze_jitter(sound: parselmouth.Sound) -> Dict[str, float]:
     except Exception as e:
         return {"error": str(e), "status": "Analysis failed"}
 
-def analyze_shimmer(sound: parselmouth.Sound) -> Dict[str, float]:
+def analyze_shimmer(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Calculate shimmer parameters"""
     try:
         point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
-        
-        # Local shimmer
         local_shimmer = call([sound, point_process], "Get shimmer (local)", 
                             0, 0, 0.0001, 0.02, 1.3, 1.6)
-        
-        # Shimmer percent
         shimmer_percent = local_shimmer * 100
-        
-        # APQ3
         apq3 = call([sound, point_process], "Get shimmer (apq3)", 
                    0, 0, 0.0001, 0.02, 1.3, 1.6)
         
@@ -213,7 +496,7 @@ def analyze_shimmer(sound: parselmouth.Sound) -> Dict[str, float]:
     except Exception as e:
         return {"error": str(e), "status": "Analysis failed"}
 
-def analyze_hnr(sound: parselmouth.Sound) -> Dict[str, float]:
+def analyze_hnr(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Calculate Harmonics-to-Noise Ratio"""
     try:
         harmonicity = sound.to_harmonicity()
@@ -278,11 +561,9 @@ def get_hnr_status(hnr_mean: float) -> str:
 
 def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict) -> Dict:
     """Generate clinical interpretation of results"""
-    
     concerns = []
     recommendations = []
     
-    # Check each parameter
     if 'percent' in jitter and jitter['percent'] > 1.0:
         concerns.append("Elevated jitter (pitch instability)")
         recommendations.append("Consider vocal fold examination")
@@ -300,7 +581,6 @@ def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict) ->
             concerns.append("Abnormal fundamental frequency")
             recommendations.append("Check for structural or functional issues")
     
-    # Overall assessment
     if len(concerns) == 0:
         overall = "Voice parameters within normal limits"
         severity = "normal"
@@ -332,7 +612,6 @@ def get_clinical_action(severity: str) -> str:
     }
     return actions.get(severity, "Clinical correlation recommended")
 
-# Add health check endpoint
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint"""
@@ -340,5 +619,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    # Run the server
     uvicorn.run(app, host="0.0.0.0", port=8000)
