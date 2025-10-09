@@ -13,7 +13,7 @@ import parselmouth
 from parselmouth.praat import call
 import io
 import base64
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import tempfile
 import os
 from pydantic import BaseModel
@@ -36,10 +36,10 @@ app.add_middleware(
 
 class AnalysisResult(BaseModel):
     """Response model for voice analysis"""
-    f0: Dict[str, float]
-    jitter: Dict[str, float]
-    shimmer: Dict[str, float]
-    hnr: Dict[str, float]
+    f0: Dict[str, Union[float, str]]
+    jitter: Dict[str, Union[float, str]]
+    shimmer: Dict[str, Union[float, str]]
+    hnr: Dict[str, Union[float, str]]
     interpretation: Dict[str, Any]
     metadata: Dict[str, Any]
 
@@ -136,7 +136,7 @@ async def analyze_voice(file: UploadFile = File(...)):
         
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
     
-    
+
 def analyze_f0(sound: parselmouth.Sound) -> Dict[str, float]:
     """Extract fundamental frequency statistics"""
     try:
