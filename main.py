@@ -58,13 +58,12 @@ async def root():
 async def analyze_voice(file: UploadFile = File(...)):
     """
     Analyze voice recording and return acoustic parameters
-    
-    Parameters:
-    - file: Audio file (WAV, MP3, M4A)
-    
-    Returns:
-    - JSON with F0, jitter, shimmer, HNR, and clinical interpretation
     """
+    import logging
+    import traceback
+    
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
     
     # Validate file
     if not file.content_type.startswith('audio'):
@@ -75,36 +74,44 @@ async def analyze_voice(file: UploadFile = File(...)):
     if len(contents) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size must be less than 50MB")
     
+    tmp_path = None
     try:
+        logger.info(f"Received file: {file.filename}")
+        
         # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
             tmp_file.write(contents)
             tmp_path = tmp_file.name
         
+        logger.info(f"Saved to temp file: {tmp_path}")
+        
         # Load audio with librosa for basic processing
+        logger.info("Loading with librosa...")
         audio_data, sample_rate = librosa.load(tmp_path, sr=None)
         duration = len(audio_data) / sample_rate
         
+        logger.info("Loading with Parselmouth...")
         # Load with Parselmouth for acoustic analysis
         sound = parselmouth.Sound(tmp_path)
         
-        # Analyze F0
+        logger.info("Analyzing F0...")
         f0_data = analyze_f0(sound)
         
-        # Analyze jitter
+        logger.info("Analyzing jitter...")
         jitter_data = analyze_jitter(sound)
         
-        # Analyze shimmer  
+        logger.info("Analyzing shimmer...")
         shimmer_data = analyze_shimmer(sound)
         
-        # Analyze HNR
+        logger.info("Analyzing HNR...")
         hnr_data = analyze_hnr(sound)
         
-        # Generate interpretation
+        logger.info("Generating interpretation...")
         interpretation = generate_interpretation(f0_data, jitter_data, shimmer_data, hnr_data)
         
         # Clean up temp file
         os.unlink(tmp_path)
+        logger.info("Analysis completed successfully")
         
         return AnalysisResult(
             f0=f0_data,
@@ -120,11 +127,16 @@ async def analyze_voice(file: UploadFile = File(...)):
         )
         
     except Exception as e:
+        logger.error(f"ERROR: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
+        
         # Clean up temp file if it exists
-        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+        
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
-
+    
+    
 def analyze_f0(sound: parselmouth.Sound) -> Dict[str, float]:
     """Extract fundamental frequency statistics"""
     try:

@@ -1,9 +1,12 @@
 services:
   - type: web
     name: voice-analyzer-api
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    runtime: python
+    buildCommand: |
+      apt-get update
+      apt-get install -y libsndfile1 ffmpeg
+      pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.12.7
