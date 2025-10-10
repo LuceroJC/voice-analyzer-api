@@ -54,6 +54,7 @@ class AnalysisResult(BaseModel):
     jitter: Dict[str, Union[float, str]]
     shimmer: Dict[str, Union[float, str]]
     hnr: Dict[str, Union[float, str]]
+    cpp: Dict[str, Union[float, str]]
     interpretation: Dict[str, Any]
     metadata: Dict[str, Any]
 
@@ -136,8 +137,11 @@ async def analyze_voice(file: UploadFile = File(...)):
         logger.info("Analyzing HNR...")
         hnr_data = analyze_hnr(sound)
         
+        logger.info("Analyzing CPP...")
+        cpp_data = analyze_cpp(sound)
+        
         logger.info("Generating interpretation...")
-        interpretation = generate_interpretation(f0_data, jitter_data, shimmer_data, hnr_data)
+        interpretation = generate_interpretation(f0_data, jitter_data, shimmer_data, hnr_data, cpp_data)
         
         # Clean up temp file
         os.unlink(tmp_path)
@@ -148,6 +152,7 @@ async def analyze_voice(file: UploadFile = File(...)):
             jitter=jitter_data,
             shimmer=shimmer_data,
             hnr=hnr_data,
+            cpp=cpp_data,
             interpretation=interpretation,
             metadata={
                 "filename": file.filename,
@@ -274,8 +279,13 @@ async def generate_pdf_report(request: PDFRequest):
             ["HNR Range", f"{results.hnr.get('min', 0):.1f} - {results.hnr.get('max', 0):.1f} dB", ""],
         ]
         
+        # CPP
+        cpp_data = [
+            ["CPP (Smoothed)", f"{results.cpp.get('value', 0):.2f} dB", results.cpp.get('status', 'N/A')],
+        ]
+        
         # Combine all measurements
-        all_data = [["Parameter", "Value", "Status"]] + f0_data[1:] + jitter_data + shimmer_data + hnr_data
+        all_data = [["Parameter", "Value", "Status"]] + f0_data[1:] + jitter_data + shimmer_data + hnr_data + cpp_data
         
         measurements_table = Table(all_data, colWidths=[2*inch, 1.5*inch, 2.5*inch])
         measurements_table.setStyle(TableStyle([
@@ -557,7 +567,35 @@ def get_hnr_status(hnr_mean: float) -> str:
     else:
         return "Significant noise - possible disorder"
 
-def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict) -> Dict:
+def analyze_cpp(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
+    """Calculate Cepstral Peak Prominence (Smoothed)"""
+    try:
+        # Convert sound to PowerCepstrogram
+        power_cepstrogram = sound.to_power_cepstrogram()
+        
+        # Get CPP (smoothed version is more robust)
+        cpp_value = call(power_cepstrogram, "Get CPPS", "yes", 0.01, 0.001, 60.0, 333.3, 0.05, "Parabolic", 0.001, 0.0, "Straight", "Robust")
+        
+        return {
+            "value": float(cpp_value),
+            "status": get_cpp_status(float(cpp_value))
+        }
+    except Exception as e:
+        logger.error(f"CPP analysis error: {str(e)}")
+        return {"value": 0, "error": str(e), "status": "Analysis failed"}
+
+def get_cpp_status(cpp_value: float) -> str:
+    """Interpret CPP value"""
+    if cpp_value > 6.0:
+        return "Good voice quality"
+    elif cpp_value > 5.0:
+        return "Mild voice quality reduction"
+    elif cpp_value > 3.0:
+        return "Moderate dysphonia"
+    else:
+        return "Severe dysphonia"
+
+def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict, cpp: Dict) -> Dict:
     """Generate clinical interpretation of results"""
     concerns = []
     recommendations = []
@@ -573,6 +611,10 @@ def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict) ->
     if 'mean' in hnr and hnr['mean'] < 20:
         concerns.append("Reduced harmonics-to-noise ratio")
         recommendations.append("Evaluate for breathiness or roughness")
+    
+    if 'value' in cpp and cpp['value'] < 5.0:
+        concerns.append("Reduced cepstral peak prominence")
+        recommendations.append("Consider comprehensive voice evaluation")
     
     if 'mean' in f0:
         if f0['mean'] < 85 or f0['mean'] > 300:
