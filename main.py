@@ -8,7 +8,6 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import numpy as np
-import librosa
 import parselmouth
 from parselmouth.praat import call
 import io
@@ -117,14 +116,13 @@ async def analyze_voice(file: UploadFile = File(...)):
         
         logger.info(f"Saved to temp file: {tmp_path}")
         
-        # Load audio with librosa for basic processing
-        logger.info("Loading with librosa...")
-        audio_data, sample_rate = librosa.load(tmp_path, sr=None)
-        duration = len(audio_data) / sample_rate
-        
-        logger.info("Loading with Parselmouth...")
-        # Load with Parselmouth for acoustic analysis
+        # Load with Parselmouth for acoustic analysis (much faster than librosa)
+        logger.info("Loading audio with Parselmouth...")
         sound = parselmouth.Sound(tmp_path)
+        
+        # Get duration and sample rate from Parselmouth
+        duration = sound.duration
+        sample_rate = int(sound.sampling_frequency)
         
         logger.info("Analyzing F0...")
         f0_data = analyze_f0(sound)
