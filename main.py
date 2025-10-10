@@ -570,10 +570,11 @@ def get_hnr_status(hnr_mean: float) -> str:
 def analyze_cpp(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Calculate Cepstral Peak Prominence (Smoothed)"""
     try:
-        # Convert sound to PowerCepstrogram
-        power_cepstrogram = sound.to_power_cepstrogram()
+        # Create PowerCepstrogram using Praat's call interface
+        power_cepstrogram = call(sound, "To PowerCepstrogram", 60.0, 0.002, 5000.0, 50.0)
         
-        # Get CPP (smoothed version is more robust)
+        # Get CPPS (Cepstral Peak Prominence Smoothed)
+        # Parameters: subtract_trend, time_averaging_window, quefrency_averaging_window
         cpp_value = call(power_cepstrogram, "Get CPPS", "yes", 0.01, 0.001, 60.0, 333.3, 0.05, "Parabolic", 0.001, 0.0, "Straight", "Robust")
         
         return {
@@ -582,7 +583,9 @@ def analyze_cpp(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
         }
     except Exception as e:
         logger.error(f"CPP analysis error: {str(e)}")
-        return {"value": 0, "error": str(e), "status": "Analysis failed"}
+        logger.error(traceback.format_exc())
+        # Return a default value instead of failing
+        return {"value": 0.0, "status": "Could not calculate CPP"}
 
 def get_cpp_status(cpp_value: float) -> str:
     """Interpret CPP value"""
