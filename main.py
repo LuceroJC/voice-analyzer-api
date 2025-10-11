@@ -58,21 +58,10 @@ class AnalysisResult(BaseModel):
     interpretation: Dict[str, Any]
     metadata: Dict[str, Any]
 
-class FeedbackSubmission(BaseModel):
-    """Model for user feedback"""
-    rating: int
-    comment: Optional[str] = None
-    feature_request: Optional[str] = None
-    user_type: Optional[str] = None
-    timestamp: Optional[str] = None
-
 class PDFRequest(BaseModel):
     """Model for PDF generation request"""
     analysis_results: AnalysisResult
     patient_info: Optional[Dict[str, str]] = None
-
-# In-memory feedback storage (replace with database in production)
-feedback_storage: List[Dict] = []
 
 @app.get("/")
 async def root():
@@ -369,75 +358,6 @@ async def generate_pdf_report(request: PDFRequest):
         logger.error(f"PDF generation error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
-
-@app.post("/feedback")
-async def submit_feedback(feedback: FeedbackSubmission):
-    """
-    Submit user feedback
-    
-    Parameters:
-    - feedback: FeedbackSubmission with rating and optional comments
-    
-    Returns:
-    - Confirmation message
-    """
-    try:
-        # Add timestamp if not provided
-        if not feedback.timestamp:
-            feedback.timestamp = datetime.now().isoformat()
-        
-        # Store feedback (in production, save to database)
-        feedback_data = feedback.dict()
-        feedback_storage.append(feedback_data)
-        
-        logger.info(f"Feedback received: Rating {feedback.rating}/5")
-        if feedback.comment:
-            logger.info(f"Comment: {feedback.comment}")
-        if feedback.feature_request:
-            logger.info(f"Feature request: {feedback.feature_request}")
-        
-        return {
-            "status": "success",
-            "message": "Thank you for your feedback!",
-            "feedback_id": len(feedback_storage)
-        }
-        
-    except Exception as e:
-        logger.error(f"Feedback submission error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to submit feedback")
-
-@app.get("/feedback/stats")
-async def get_feedback_stats():
-    """
-    Get feedback statistics (for admin use)
-    
-    Returns:
-    - Summary of feedback data
-    """
-    if not feedback_storage:
-        return {
-            "total_feedback": 0,
-            "average_rating": 0,
-            "ratings_distribution": {}
-        }
-    
-    ratings = [f['rating'] for f in feedback_storage]
-    
-    return {
-        "total_feedback": len(feedback_storage),
-        "average_rating": round(sum(ratings) / len(ratings), 2),
-        "ratings_distribution": {
-            str(i): ratings.count(i) for i in range(1, 6)
-        },
-        "recent_comments": [
-            {
-                "rating": f['rating'],
-                "comment": f.get('comment', ''),
-                "timestamp": f.get('timestamp', '')
-            }
-            for f in feedback_storage[-10:]  # Last 10 feedbacks
-        ]
-    }
 
 # Analysis helper functions (keep existing code)
 def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
