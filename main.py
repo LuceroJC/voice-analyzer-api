@@ -20,6 +20,8 @@ from datetime import datetime
 import logging
 import traceback
 from pydub import AudioSegment
+import warnings
+warnings.filterwarnings('ignore', category=SyntaxWarning, module='pydub')
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
