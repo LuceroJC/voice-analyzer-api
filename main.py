@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from datetime import datetime
 import logging
 import traceback
+from pydub import AudioSegment
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter
@@ -91,39 +92,105 @@ async def analyze_voice(file: UploadFile = File(...)):
     Analyze voice recording and return acoustic parameters
     
     Parameters:
-    - file: Audio file (WAV, MP3, M4A)
+    - file: Audio file (WAV, MP3, M4A, CAF, etc.)
     
     Returns:
     - JSON with F0, jitter, shimmer, HNR, and clinical interpretation
     """
-    
-    # Validate file
-    if not file.content_type.startswith('audio'):
-        raise HTTPException(status_code=400, detail="Please upload an audio file")
     
     # Size limit (50MB)
     contents = await file.read()
     if len(contents) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size must be less than 50MB")
     
-    tmp_path = None
+    tmp_input_path = None
+    tmp_wav_path = None
+    
     try:
-        logger.info(f"Received file: {file.filename}")
+        logger.info(f"Received file: {file.filename}, type: {file.content_type}, size: {len(contents)} bytes")
+        
+        # Determine file extension - try multiple methods
+        file_extension = os.path.splitext(file.filename)[1].lower() if file.filename else ''
+        
+        # If no extension from filename, guess from content type
+        if not file_extension or file_extension == '.':
+            content_type_map = {
+                'audio/mp4': '.m4a',
+                'audio/x-m4a': '.m4a',
+                'audio/mpeg': '.mp3',
+                'audio/mp3': '.mp3',
+                'audio/wav': '.wav',
+                'audio/wave': '.wav',
+                'audio/x-wav': '.wav',
+                'audio/x-caf': '.caf',
+                'audio/webm': '.webm',
+                'audio/ogg': '.ogg'
+            }
+            file_extension = content_type_map.get(file.content_type, '.m4a')  # Default to m4a
+            logger.info(f"No extension found, using: {file_extension} based on content type")
         
         # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
             tmp_file.write(contents)
-            tmp_path = tmp_file.name
+            tmp_input_path = tmp_file.name
         
-        logger.info(f"Saved to temp file: {tmp_path}")
+        logger.info(f"Saved to temp file: {tmp_input_path}")
         
-        # Load with Parselmouth for acoustic analysis (much faster than librosa)
+        # Convert to WAV if needed
+        if file_extension.lower() not in ['.wav', '.wave']:
+            logger.info(f"Converting {file_extension} to WAV...")
+            try:
+                # Load audio with pydub (supports many formats including CAF with ffmpeg)
+                audio = AudioSegment.from_file(tmp_input_path)
+                
+                # Ensure mono and reasonable sample rate for voice analysis
+                if audio.channels > 1:
+                    logger.info("Converting to mono...")
+                    audio = audio.set_channels(1)
+                
+                # Resample if too high (voice analysis doesn't need >44.1kHz)
+                if audio.frame_rate > 48000:
+                    logger.info(f"Resampling from {audio.frame_rate}Hz to 44100Hz...")
+                    audio = audio.set_frame_rate(44100)
+                
+                # Export as WAV with optimal settings for voice analysis
+                tmp_wav_path = tmp_input_path.replace(file_extension, '.wav')
+                audio.export(
+                    tmp_wav_path, 
+                    format='wav',
+                    parameters=["-ac", "1"]  # Ensure mono
+                )
+                logger.info(f"Converted to WAV: {tmp_wav_path}")
+                
+                # Use the WAV file for analysis
+                analysis_path = tmp_wav_path
+            except Exception as e:
+                logger.error(f"Conversion error: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Could not process audio file. Please ensure it's a valid voice recording. Supported formats: M4A, MP3, WAV, CAF. Error: {str(e)}"
+                )
+        else:
+            # Already WAV, use directly
+            analysis_path = tmp_input_path
+        
+        # Load with Parselmouth for acoustic analysis
         logger.info("Loading audio with Parselmouth...")
-        sound = parselmouth.Sound(tmp_path)
+        sound = parselmouth.Sound(analysis_path)
         
         # Get duration and sample rate from Parselmouth
         duration = sound.duration
         sample_rate = int(sound.sampling_frequency)
+        
+        logger.info(f"Audio loaded: {duration}s at {sample_rate}Hz")
+        
+        # Check if audio is long enough for analysis
+        if duration < 0.5:
+            raise HTTPException(
+                status_code=400,
+                detail="Recording too short. Please provide at least 0.5 seconds of audio for analysis."
+            )
         
         logger.info("Analyzing F0...")
         f0_data = analyze_f0(sound)
@@ -143,8 +210,12 @@ async def analyze_voice(file: UploadFile = File(...)):
         logger.info("Generating interpretation...")
         interpretation = generate_interpretation(f0_data, jitter_data, shimmer_data, hnr_data, cpp_data)
         
-        # Clean up temp file
-        os.unlink(tmp_path)
+        # Clean up temp files
+        if tmp_input_path and os.path.exists(tmp_input_path):
+            os.unlink(tmp_input_path)
+        if tmp_wav_path and os.path.exists(tmp_wav_path):
+            os.unlink(tmp_wav_path)
+            
         logger.info("Analysis completed successfully")
         
         return AnalysisResult(
@@ -158,20 +229,26 @@ async def analyze_voice(file: UploadFile = File(...)):
                 "filename": file.filename,
                 "duration": round(duration, 2),
                 "sample_rate": int(sample_rate),
-                "analysis_date": datetime.now().isoformat()
+                "analysis_date": datetime.now().isoformat(),
+                "original_format": file_extension
             }
         )
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         logger.error(f"ERROR: {str(e)}")
         logger.error(f"Full traceback:\n{traceback.format_exc()}")
         
-        # Clean up temp file if it exists
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        # Clean up temp files if they exist
+        if tmp_input_path and os.path.exists(tmp_input_path):
+            os.unlink(tmp_input_path)
+        if tmp_wav_path and os.path.exists(tmp_wav_path):
+            os.unlink(tmp_wav_path)
         
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
-
+    
 @app.post("/generate-pdf")
 async def generate_pdf_report(request: PDFRequest):
     """
