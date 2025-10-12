@@ -300,21 +300,14 @@ async def generate_pdf_report(request: PDFRequest):
         # Metadata
         metadata = request.analysis_results.metadata
         elements.append(Paragraph("Recording Information", heading_style))
-        
+
         info_data = [
             ["Filename:", metadata.get('filename', 'N/A')],
             ["Duration:", f"{metadata.get('duration', 0)} seconds"],
             ["Sample Rate:", f"{metadata.get('sample_rate', 0)} Hz"],
             ["Analysis Date:", metadata.get('analysis_date', datetime.now().isoformat())[:19].replace('T', ' ')],
         ]
-        
-        # Add patient info if provided
-        if request.patient_info:
-            elements.append(Spacer(1, 0.2*inch))
-            elements.append(Paragraph("Patient Information", heading_style))
-            patient_data = [[k.replace('_', ' ').title() + ':', v] for k, v in request.patient_info.items()]
-            info_data.extend(patient_data)
-        
+
         info_table = Table(info_data, colWidths=[2*inch, 4*inch])
         info_table.setStyle(TableStyle([
             ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
@@ -324,6 +317,23 @@ async def generate_pdf_report(request: PDFRequest):
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(info_table)
+
+        # Add patient info if provided (and not None/empty)
+        if request.patient_info and any(request.patient_info.values() if isinstance(request.patient_info, dict) else []):
+            elements.append(Spacer(1, 0.2*inch))
+            elements.append(Paragraph("Patient Information", heading_style))
+            patient_data = [[k.replace('_', ' ').title() + ':', v] for k, v in request.patient_info.items() if v]
+            if patient_data:
+                patient_table = Table(patient_data, colWidths=[2*inch, 4*inch])
+                patient_table.setStyle(TableStyle([
+                    ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ]))
+                elements.append(patient_table)
+
         elements.append(Spacer(1, 0.3*inch))
         
         # Acoustic Parameters
