@@ -2,6 +2,7 @@
 VoiceFlow Tools - Voice Analysis API
 FastAPI backend for acoustic voice analysis
 Author: Dr. Jorge C. Lucero
+Version: 1.1.0 - Memory Optimized
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Phonalab Voice Analyzer API",
     description="Professional acoustic voice analysis for clinicians",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # Configure CORS for web access
@@ -50,6 +51,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ===== MEMORY OPTIMIZATION SETTINGS =====
+MAX_DURATION_SECONDS = 30  # Analyze first 30 seconds only
+TARGET_SAMPLE_RATE = 16000  # Downsample to 16kHz (sufficient for voice analysis)
+# ========================================
 
 class AnalysisResult(BaseModel):
     """Response model for voice analysis"""
@@ -83,9 +89,11 @@ async def root():
     return {
         "status": "active",
         "service": "Phonalab Voice Analyzer",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "author": "Dr. Jorge C. Lucero",
-        "description": "Professional acoustic voice analysis API"
+        "description": "Professional acoustic voice analysis API",
+        "max_analysis_duration": f"{MAX_DURATION_SECONDS} seconds",
+        "optimized_sample_rate": f"{TARGET_SAMPLE_RATE} Hz"
     }
 
 @app.post("/analyze", response_model=AnalysisResult)
@@ -98,6 +106,9 @@ async def analyze_voice(file: UploadFile = File(...)):
     
     Returns:
     - JSON with F0, jitter, shimmer, HNR, and clinical interpretation
+    
+    Note: For memory efficiency, files longer than 30 seconds will be automatically
+    trimmed to the first 30 seconds for analysis.
     """
     
     # Size limit (50MB)
@@ -128,7 +139,7 @@ async def analyze_voice(file: UploadFile = File(...)):
                 'audio/webm': '.webm',
                 'audio/ogg': '.ogg'
             }
-            file_extension = content_type_map.get(file.content_type, '.m4a')  # Default to m4a
+            file_extension = content_type_map.get(file.content_type, '.m4a')
             logger.info(f"No extension found, using: {file_extension} based on content type")
         
         # Save uploaded file temporarily
@@ -138,44 +149,164 @@ async def analyze_voice(file: UploadFile = File(...)):
         
         logger.info(f"Saved to temp file: {tmp_input_path}")
         
-        # Convert to WAV if needed
-        if file_extension.lower() not in ['.wav', '.wave']:
-            logger.info(f"Converting {file_extension} to WAV...")
-            try:
-                # Load audio with pydub (supports many formats including CAF with ffmpeg)
-                audio = AudioSegment.from_file(tmp_input_path)
-                
-                # Ensure mono and reasonable sample rate for voice analysis
-                if audio.channels > 1:
-                    logger.info("Converting to mono...")
-                    audio = audio.set_channels(1)
-                
-                # Resample if too high (voice analysis doesn't need >44.1kHz)
-                if audio.frame_rate > 48000:
-                    logger.info(f"Resampling from {audio.frame_rate}Hz to 44100Hz...")
-                    audio = audio.set_frame_rate(44100)
-                
-                # Export as WAV with optimal settings for voice analysis
-                tmp_wav_path = tmp_input_path.replace(file_extension, '.wav')
-                audio.export(
-                    tmp_wav_path, 
-                    format='wav',
-                    parameters=["-ac", "1"]  # Ensure mono
-                )
-                logger.info(f"Converted to WAV: {tmp_wav_path}")
-                
-                # Use the WAV file for analysis
-                analysis_path = tmp_wav_path
-            except Exception as e:
-                logger.error(f"Conversion error: {str(e)}")
-                logger.error(traceback.format_exc())
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Could not process audio file. Please ensure it's a valid voice recording. Supported formats: M4A, MP3, WAV, CAF. Error: {str(e)}"
-                )
-        else:
-            # Already WAV, use directly
-            analysis_path = tmp_input_path
+        # Convert to WAV with optimization
+        logger.info(f"Converting {file_extension} to optimized WAV...")
+        try:
+            # Load audio with pydub
+            audio = AudioSegment.from_file(tmp_input_path)
+            
+            # Convert to mono
+            if audio.channels > 1:
+                logger.info("Converting to mono...")
+                audio = audio.set_channels(1)
+            
+            # Downsample to target rate for memory efficiency
+            logger.info(f"Resampling to {TARGET_SAMPLE_RATE}Hz for optimal memory usage...")
+            audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
+            
+            # Trim to max duration
+            original_duration = len(audio) / 1000.0
+            if len(audio) > MAX_DURATION_SECONDS * 1000:
+                logger.info(f"Trimming audio from {original_duration:.1f}s to {MAX_DURATION_SECONDS}s")
+                audio = audio[:MAX_DURATION_SECONDS * 1000]
+            
+            # Export as WAV
+            tmp_wav_path = tmp_input_path.replace(file_extension, '.wav')
+            audio.export(
+                tmp_wav_path, 
+                format='wav',
+                parameters=["-ac", "1"]
+            )
+            logger.info(f"Converted to WAV: {tmp_wav_path}")
+            
+            # Use the WAV file for analysis
+            analysis_path = tmp_wav_path
+            
+        except Exception as e:
+        logger.error(f"CPP analysis error: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {"value": 0.0, "status": "Could not calculate CPP"}
+
+def get_f0_status(f0_mean: float) -> str:
+    """Interpret F0 value"""
+    if f0_mean < 85:
+        return "Very low - possible pathology"
+    elif 85 <= f0_mean < 155:
+        return "Normal range (adult male)"
+    elif 155 <= f0_mean < 255:
+        return "Normal range (adult female)"
+    else:
+        return "High - possible tension or pediatric"
+
+def get_jitter_status(jitter_percent: float) -> str:
+    """Interpret jitter value"""
+    if jitter_percent < 1.0:
+        return "Normal"
+    elif jitter_percent < 2.0:
+        return "Slightly elevated"
+    else:
+        return "Elevated - suggests voice disorder"
+
+def get_shimmer_status(shimmer_percent: float) -> str:
+    """Interpret shimmer value"""
+    if shimmer_percent < 3.0:
+        return "Normal"
+    elif shimmer_percent < 5.0:
+        return "Slightly elevated"
+    else:
+        return "Elevated - suggests voice disorder"
+
+def get_hnr_status(hnr_mean: float) -> str:
+    """Interpret HNR value"""
+    if hnr_mean > 20:
+        return "Good voice quality"
+    elif hnr_mean > 15:
+        return "Mild noise component"
+    else:
+        return "Significant noise - possible disorder"
+
+def get_cpp_status(cpp_value: float) -> str:
+    """Interpret CPP value"""
+    if cpp_value > 6.0:
+        return "Good voice quality"
+    elif cpp_value > 5.0:
+        return "Mild voice quality reduction"
+    elif cpp_value > 3.0:
+        return "Moderate dysphonia"
+    else:
+        return "Severe dysphonia"
+
+def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict, cpp: Dict) -> Dict:
+    """Generate clinical interpretation of results"""
+    concerns = []
+    recommendations = []
+    
+    if 'percent' in jitter and jitter['percent'] > 1.0:
+        concerns.append("Elevated jitter (pitch instability)")
+        recommendations.append("Consider vocal fold examination")
+    
+    if 'percent' in shimmer and shimmer['percent'] > 3.0:
+        concerns.append("Elevated shimmer (amplitude instability)")
+        recommendations.append("Assess for vocal fold lesions")
+    
+    if 'mean' in hnr and hnr['mean'] < 20:
+        concerns.append("Reduced harmonics-to-noise ratio")
+        recommendations.append("Evaluate for breathiness or roughness")
+    
+    if 'value' in cpp and cpp['value'] < 5.0:
+        concerns.append("Reduced cepstral peak prominence")
+        recommendations.append("Consider comprehensive voice evaluation")
+    
+    if 'mean' in f0:
+        if f0['mean'] < 85 or f0['mean'] > 300:
+            concerns.append("Abnormal fundamental frequency")
+            recommendations.append("Check for structural or functional issues")
+    
+    if len(concerns) == 0:
+        overall = "Voice parameters within normal limits"
+        severity = "normal"
+    elif len(concerns) == 1:
+        overall = "Mild voice quality concerns noted"
+        severity = "mild"
+    elif len(concerns) == 2:
+        overall = "Moderate voice disorder indicators present"
+        severity = "moderate"
+    else:
+        overall = "Multiple parameters suggest significant voice disorder"
+        severity = "severe"
+    
+    return {
+        "overall_assessment": overall,
+        "severity": severity,
+        "concerns": concerns,
+        "recommendations": recommendations,
+        "clinical_action": get_clinical_action(severity)
+    }
+
+def get_clinical_action(severity: str) -> str:
+    """Suggest clinical action based on severity"""
+    actions = {
+        "normal": "Continue routine monitoring",
+        "mild": "Monitor and consider voice hygiene education",
+        "moderate": "Recommend comprehensive voice evaluation",
+        "severe": "Urgent referral to otolaryngology recommended"
+    }
+    return actions.get(severity, "Clinical correlation recommended")
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    return {"status": "healthy", "service": "voice-analyzer", "version": "1.1.0"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+            logger.error(f"Conversion error: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Could not process audio file. Please ensure it's a valid voice recording. Supported formats: M4A, MP3, WAV, CAF. Error: {str(e)}"
+            )
         
         # Load with Parselmouth for acoustic analysis
         logger.info("Loading audio with Parselmouth...")
@@ -185,7 +316,7 @@ async def analyze_voice(file: UploadFile = File(...)):
         duration = sound.duration
         sample_rate = int(sound.sampling_frequency)
         
-        logger.info(f"Audio loaded: {duration}s at {sample_rate}Hz")
+        logger.info(f"Audio loaded: {duration:.2f}s at {sample_rate}Hz")
         
         # Check if audio is long enough for analysis
         if duration < 0.5:
@@ -206,8 +337,8 @@ async def analyze_voice(file: UploadFile = File(...)):
         logger.info("Analyzing HNR...")
         hnr_data = analyze_hnr(sound)
         
-        logger.info("Analyzing CPP...")
-        cpp_data = analyze_cpp(sound)
+        logger.info("Analyzing CPP (memory-optimized)...")
+        cpp_data = analyze_cpp_efficient(sound)
         
         logger.info("Generating interpretation...")
         interpretation = generate_interpretation(f0_data, jitter_data, shimmer_data, hnr_data, cpp_data)
@@ -220,6 +351,20 @@ async def analyze_voice(file: UploadFile = File(...)):
             
         logger.info("Analysis completed successfully")
         
+        # Prepare metadata
+        metadata = {
+            "filename": file.filename,
+            "duration": round(duration, 2),
+            "sample_rate": int(sample_rate),
+            "analysis_date": datetime.now().isoformat(),
+            "original_format": file_extension,
+            "analyzed_duration": round(min(duration, MAX_DURATION_SECONDS), 2)
+        }
+        
+        # Add note if file was trimmed
+        if original_duration > MAX_DURATION_SECONDS:
+            metadata["note"] = f"Original file was {original_duration:.1f}s. Analysis performed on first {MAX_DURATION_SECONDS}s for memory optimization."
+        
         return AnalysisResult(
             f0=f0_data,
             jitter=jitter_data,
@@ -227,13 +372,7 @@ async def analyze_voice(file: UploadFile = File(...)):
             hnr=hnr_data,
             cpp=cpp_data,
             interpretation=interpretation,
-            metadata={
-                "filename": file.filename,
-                "duration": round(duration, 2),
-                "sample_rate": int(sample_rate),
-                "analysis_date": datetime.now().isoformat(),
-                "original_format": file_extension
-            }
+            metadata=metadata
         )
         
     except HTTPException:
@@ -245,9 +384,15 @@ async def analyze_voice(file: UploadFile = File(...)):
         
         # Clean up temp files if they exist
         if tmp_input_path and os.path.exists(tmp_input_path):
-            os.unlink(tmp_input_path)
+            try:
+                os.unlink(tmp_input_path)
+            except:
+                pass
         if tmp_wav_path and os.path.exists(tmp_wav_path):
-            os.unlink(tmp_wav_path)
+            try:
+                os.unlink(tmp_wav_path)
+            except:
+                pass
         
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
     
@@ -320,7 +465,7 @@ async def generate_pdf_report(request: PDFRequest):
         ]))
         elements.append(info_table)
 
-        # Add patient info if provided (and not None/empty)
+        # Add patient info if provided
         if request.patient_info and any(request.patient_info.values() if isinstance(request.patient_info, dict) else []):
             elements.append(Spacer(1, 0.2*inch))
             elements.append(Paragraph("Patient Information", heading_style))
@@ -528,11 +673,12 @@ async def get_feedback_stats():
                 "feature_request": f.get('feature_request', ''),
                 "timestamp": f.get('timestamp', '')
             }
-            for f in feedback_storage[-10:]  # Last 10 feedbacks
+            for f in feedback_storage[-10:]
         ]
     }
 
-# Analysis helper functions (keep existing code)
+# ===== ANALYSIS HELPER FUNCTIONS =====
+
 def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Extract fundamental frequency statistics"""
     try:
@@ -622,137 +768,52 @@ def analyze_hnr(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     except Exception as e:
         return {"error": str(e), "status": "Analysis failed"}
 
-def get_f0_status(f0_mean: float) -> str:
-    """Interpret F0 value"""
-    if f0_mean < 85:
-        return "Very low - possible pathology"
-    elif 85 <= f0_mean < 155:
-        return "Normal range (adult male)"
-    elif 155 <= f0_mean < 255:
-        return "Normal range (adult female)"
-    else:
-        return "High - possible tension or pediatric"
-
-def get_jitter_status(jitter_percent: float) -> str:
-    """Interpret jitter value"""
-    if jitter_percent < 1.0:
-        return "Normal"
-    elif jitter_percent < 2.0:
-        return "Slightly elevated"
-    else:
-        return "Elevated - suggests voice disorder"
-
-def get_shimmer_status(shimmer_percent: float) -> str:
-    """Interpret shimmer value"""
-    if shimmer_percent < 3.0:
-        return "Normal"
-    elif shimmer_percent < 5.0:
-        return "Slightly elevated"
-    else:
-        return "Elevated - suggests voice disorder"
-
-def get_hnr_status(hnr_mean: float) -> str:
-    """Interpret HNR value"""
-    if hnr_mean > 20:
-        return "Good voice quality"
-    elif hnr_mean > 15:
-        return "Mild noise component"
-    else:
-        return "Significant noise - possible disorder"
-
-def analyze_cpp(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
-    """Calculate Cepstral Peak Prominence (Smoothed)"""
+def analyze_cpp_efficient(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
+    """
+    Memory-efficient CPP analysis using chunking
+    This is the OPTIMIZED version that processes in chunks to reduce memory usage
+    """
     try:
-        # Create PowerCepstrogram using Praat's call interface
-        power_cepstrogram = call(sound, "To PowerCepstrogram", 60.0, 0.002, 5000.0, 50.0)
+        duration = sound.get_total_duration()
+        chunk_size = 5.0  # 5-second chunks
+        cpp_values = []
         
-        # Get CPPS (Cepstral Peak Prominence Smoothed)
-        # Parameters: subtract_trend, time_averaging_window, quefrency_averaging_window
-        cpp_value = call(power_cepstrogram, "Get CPPS", "yes", 0.01, 0.001, 60.0, 333.3, 0.05, "Parabolic", 0.001, 0.0, "Straight", "Robust")
+        num_chunks = min(int(duration / chunk_size) + 1, 6)  # Max 6 chunks
         
-        return {
-            "value": float(cpp_value),
-            "status": get_cpp_status(float(cpp_value))
-        }
+        for i in range(num_chunks):
+            start_time = i * chunk_size
+            end_time = min(start_time + chunk_size, duration)
+            
+            if end_time - start_time < 1.0:  # Skip chunks shorter than 1 second
+                continue
+            
+            try:
+                # Extract chunk
+                chunk = call(sound, "Extract part", start_time, end_time, "rectangular", 1.0, "no")
+                
+                # Calculate CPP for chunk
+                power_cepstrogram = call(chunk, "To PowerCepstrogram", 60.0, 0.002, 5000.0, 50.0)
+                cpp_chunk = call(power_cepstrogram, "Get CPPS", "yes", 0.01, 0.001, 60.0, 333.3, 0.05, "Parabolic", 0.001, 0.0, "Straight", "Robust")
+                
+                if cpp_chunk is not None:
+                    cpp_values.append(float(cpp_chunk))
+                
+                # Explicit cleanup
+                del chunk
+                del power_cepstrogram
+                
+            except Exception as chunk_error:
+                logger.warning(f"CPP chunk {i} failed: {chunk_error}")
+                continue
+        
+        # Return mean CPP
+        if cpp_values:
+            mean_cpp = sum(cpp_values) / len(cpp_values)
+            return {
+                "value": float(mean_cpp),
+                "status": get_cpp_status(float(mean_cpp))
+            }
+        else:
+            return {"value": 0.0, "status": "Could not calculate CPP"}
+        
     except Exception as e:
-        logger.error(f"CPP analysis error: {str(e)}")
-        logger.error(traceback.format_exc())
-        # Return a default value instead of failing
-        return {"value": 0.0, "status": "Could not calculate CPP"}
-
-def get_cpp_status(cpp_value: float) -> str:
-    """Interpret CPP value"""
-    if cpp_value > 6.0:
-        return "Good voice quality"
-    elif cpp_value > 5.0:
-        return "Mild voice quality reduction"
-    elif cpp_value > 3.0:
-        return "Moderate dysphonia"
-    else:
-        return "Severe dysphonia"
-
-def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict, cpp: Dict) -> Dict:
-    """Generate clinical interpretation of results"""
-    concerns = []
-    recommendations = []
-    
-    if 'percent' in jitter and jitter['percent'] > 1.0:
-        concerns.append("Elevated jitter (pitch instability)")
-        recommendations.append("Consider vocal fold examination")
-    
-    if 'percent' in shimmer and shimmer['percent'] > 3.0:
-        concerns.append("Elevated shimmer (amplitude instability)")
-        recommendations.append("Assess for vocal fold lesions")
-    
-    if 'mean' in hnr and hnr['mean'] < 20:
-        concerns.append("Reduced harmonics-to-noise ratio")
-        recommendations.append("Evaluate for breathiness or roughness")
-    
-    if 'value' in cpp and cpp['value'] < 5.0:
-        concerns.append("Reduced cepstral peak prominence")
-        recommendations.append("Consider comprehensive voice evaluation")
-    
-    if 'mean' in f0:
-        if f0['mean'] < 85 or f0['mean'] > 300:
-            concerns.append("Abnormal fundamental frequency")
-            recommendations.append("Check for structural or functional issues")
-    
-    if len(concerns) == 0:
-        overall = "Voice parameters within normal limits"
-        severity = "normal"
-    elif len(concerns) == 1:
-        overall = "Mild voice quality concerns noted"
-        severity = "mild"
-    elif len(concerns) == 2:
-        overall = "Moderate voice disorder indicators present"
-        severity = "moderate"
-    else:
-        overall = "Multiple parameters suggest significant voice disorder"
-        severity = "severe"
-    
-    return {
-        "overall_assessment": overall,
-        "severity": severity,
-        "concerns": concerns,
-        "recommendations": recommendations,
-        "clinical_action": get_clinical_action(severity)
-    }
-
-def get_clinical_action(severity: str) -> str:
-    """Suggest clinical action based on severity"""
-    actions = {
-        "normal": "Continue routine monitoring",
-        "mild": "Monitor and consider voice hygiene education",
-        "moderate": "Recommend comprehensive voice evaluation",
-        "severe": "Urgent referral to otolaryngology recommended"
-    }
-    return actions.get(severity, "Clinical correlation recommended")
-
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint"""
-    return {"status": "healthy", "service": "voice-analyzer"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
