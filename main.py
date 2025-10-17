@@ -155,6 +155,9 @@ async def analyze_voice(file: UploadFile = File(...)):
             # Load audio with pydub
             audio = AudioSegment.from_file(tmp_input_path)
             
+            # Store original duration before trimming
+            original_duration = len(audio) / 1000.0
+            
             # Convert to mono
             if audio.channels > 1:
                 logger.info("Converting to mono...")
@@ -165,7 +168,6 @@ async def analyze_voice(file: UploadFile = File(...)):
             audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
             
             # Trim to max duration
-            original_duration = len(audio) / 1000.0
             if len(audio) > MAX_DURATION_SECONDS * 1000:
                 logger.info(f"Trimming audio from {original_duration:.1f}s to {MAX_DURATION_SECONDS}s")
                 audio = audio[:MAX_DURATION_SECONDS * 1000]
@@ -183,124 +185,6 @@ async def analyze_voice(file: UploadFile = File(...)):
             analysis_path = tmp_wav_path
             
         except Exception as e:
-        logger.error(f"CPP analysis error: {str(e)}")
-        logger.error(traceback.format_exc())
-        return {"value": 0.0, "status": "Could not calculate CPP"}
-
-def get_f0_status(f0_mean: float) -> str:
-    """Interpret F0 value"""
-    if f0_mean < 85:
-        return "Very low - possible pathology"
-    elif 85 <= f0_mean < 155:
-        return "Normal range (adult male)"
-    elif 155 <= f0_mean < 255:
-        return "Normal range (adult female)"
-    else:
-        return "High - possible tension or pediatric"
-
-def get_jitter_status(jitter_percent: float) -> str:
-    """Interpret jitter value"""
-    if jitter_percent < 1.0:
-        return "Normal"
-    elif jitter_percent < 2.0:
-        return "Slightly elevated"
-    else:
-        return "Elevated - suggests voice disorder"
-
-def get_shimmer_status(shimmer_percent: float) -> str:
-    """Interpret shimmer value"""
-    if shimmer_percent < 3.0:
-        return "Normal"
-    elif shimmer_percent < 5.0:
-        return "Slightly elevated"
-    else:
-        return "Elevated - suggests voice disorder"
-
-def get_hnr_status(hnr_mean: float) -> str:
-    """Interpret HNR value"""
-    if hnr_mean > 20:
-        return "Good voice quality"
-    elif hnr_mean > 15:
-        return "Mild noise component"
-    else:
-        return "Significant noise - possible disorder"
-
-def get_cpp_status(cpp_value: float) -> str:
-    """Interpret CPP value"""
-    if cpp_value > 6.0:
-        return "Good voice quality"
-    elif cpp_value > 5.0:
-        return "Mild voice quality reduction"
-    elif cpp_value > 3.0:
-        return "Moderate dysphonia"
-    else:
-        return "Severe dysphonia"
-
-def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict, cpp: Dict) -> Dict:
-    """Generate clinical interpretation of results"""
-    concerns = []
-    recommendations = []
-    
-    if 'percent' in jitter and jitter['percent'] > 1.0:
-        concerns.append("Elevated jitter (pitch instability)")
-        recommendations.append("Consider vocal fold examination")
-    
-    if 'percent' in shimmer and shimmer['percent'] > 3.0:
-        concerns.append("Elevated shimmer (amplitude instability)")
-        recommendations.append("Assess for vocal fold lesions")
-    
-    if 'mean' in hnr and hnr['mean'] < 20:
-        concerns.append("Reduced harmonics-to-noise ratio")
-        recommendations.append("Evaluate for breathiness or roughness")
-    
-    if 'value' in cpp and cpp['value'] < 5.0:
-        concerns.append("Reduced cepstral peak prominence")
-        recommendations.append("Consider comprehensive voice evaluation")
-    
-    if 'mean' in f0:
-        if f0['mean'] < 85 or f0['mean'] > 300:
-            concerns.append("Abnormal fundamental frequency")
-            recommendations.append("Check for structural or functional issues")
-    
-    if len(concerns) == 0:
-        overall = "Voice parameters within normal limits"
-        severity = "normal"
-    elif len(concerns) == 1:
-        overall = "Mild voice quality concerns noted"
-        severity = "mild"
-    elif len(concerns) == 2:
-        overall = "Moderate voice disorder indicators present"
-        severity = "moderate"
-    else:
-        overall = "Multiple parameters suggest significant voice disorder"
-        severity = "severe"
-    
-    return {
-        "overall_assessment": overall,
-        "severity": severity,
-        "concerns": concerns,
-        "recommendations": recommendations,
-        "clinical_action": get_clinical_action(severity)
-    }
-
-def get_clinical_action(severity: str) -> str:
-    """Suggest clinical action based on severity"""
-    actions = {
-        "normal": "Continue routine monitoring",
-        "mild": "Monitor and consider voice hygiene education",
-        "moderate": "Recommend comprehensive voice evaluation",
-        "severe": "Urgent referral to otolaryngology recommended"
-    }
-    return actions.get(severity, "Clinical correlation recommended")
-
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint"""
-    return {"status": "healthy", "service": "voice-analyzer", "version": "1.1.0"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
             logger.error(f"Conversion error: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(
@@ -817,3 +701,121 @@ def analyze_cpp_efficient(sound: parselmouth.Sound) -> Dict[str, Union[float, st
             return {"value": 0.0, "status": "Could not calculate CPP"}
         
     except Exception as e:
+        logger.error(f"CPP analysis error: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {"value": 0.0, "status": "Could not calculate CPP"}
+
+def get_f0_status(f0_mean: float) -> str:
+    """Interpret F0 value"""
+    if f0_mean < 85:
+        return "Very low - possible pathology"
+    elif 85 <= f0_mean < 155:
+        return "Normal range (adult male)"
+    elif 155 <= f0_mean < 255:
+        return "Normal range (adult female)"
+    else:
+        return "High - possible tension or pediatric"
+
+def get_jitter_status(jitter_percent: float) -> str:
+    """Interpret jitter value"""
+    if jitter_percent < 1.0:
+        return "Normal"
+    elif jitter_percent < 2.0:
+        return "Slightly elevated"
+    else:
+        return "Elevated - suggests voice disorder"
+
+def get_shimmer_status(shimmer_percent: float) -> str:
+    """Interpret shimmer value"""
+    if shimmer_percent < 3.0:
+        return "Normal"
+    elif shimmer_percent < 5.0:
+        return "Slightly elevated"
+    else:
+        return "Elevated - suggests voice disorder"
+
+def get_hnr_status(hnr_mean: float) -> str:
+    """Interpret HNR value"""
+    if hnr_mean > 20:
+        return "Good voice quality"
+    elif hnr_mean > 15:
+        return "Mild noise component"
+    else:
+        return "Significant noise - possible disorder"
+
+def get_cpp_status(cpp_value: float) -> str:
+    """Interpret CPP value"""
+    if cpp_value > 6.0:
+        return "Good voice quality"
+    elif cpp_value > 5.0:
+        return "Mild voice quality reduction"
+    elif cpp_value > 3.0:
+        return "Moderate dysphonia"
+    else:
+        return "Severe dysphonia"
+
+def generate_interpretation(f0: Dict, jitter: Dict, shimmer: Dict, hnr: Dict, cpp: Dict) -> Dict:
+    """Generate clinical interpretation of results"""
+    concerns = []
+    recommendations = []
+    
+    if 'percent' in jitter and jitter['percent'] > 1.0:
+        concerns.append("Elevated jitter (pitch instability)")
+        recommendations.append("Consider vocal fold examination")
+    
+    if 'percent' in shimmer and shimmer['percent'] > 3.0:
+        concerns.append("Elevated shimmer (amplitude instability)")
+        recommendations.append("Assess for vocal fold lesions")
+    
+    if 'mean' in hnr and hnr['mean'] < 20:
+        concerns.append("Reduced harmonics-to-noise ratio")
+        recommendations.append("Evaluate for breathiness or roughness")
+    
+    if 'value' in cpp and cpp['value'] < 5.0:
+        concerns.append("Reduced cepstral peak prominence")
+        recommendations.append("Consider comprehensive voice evaluation")
+    
+    if 'mean' in f0:
+        if f0['mean'] < 85 or f0['mean'] > 300:
+            concerns.append("Abnormal fundamental frequency")
+            recommendations.append("Check for structural or functional issues")
+    
+    if len(concerns) == 0:
+        overall = "Voice parameters within normal limits"
+        severity = "normal"
+    elif len(concerns) == 1:
+        overall = "Mild voice quality concerns noted"
+        severity = "mild"
+    elif len(concerns) == 2:
+        overall = "Moderate voice disorder indicators present"
+        severity = "moderate"
+    else:
+        overall = "Multiple parameters suggest significant voice disorder"
+        severity = "severe"
+    
+    return {
+        "overall_assessment": overall,
+        "severity": severity,
+        "concerns": concerns,
+        "recommendations": recommendations,
+        "clinical_action": get_clinical_action(severity)
+    }
+
+def get_clinical_action(severity: str) -> str:
+    """Suggest clinical action based on severity"""
+    actions = {
+        "normal": "Continue routine monitoring",
+        "mild": "Monitor and consider voice hygiene education",
+        "moderate": "Recommend comprehensive voice evaluation",
+        "severe": "Urgent referral to otolaryngology recommended"
+    }
+    return actions.get(severity, "Clinical correlation recommended")
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    return {"status": "healthy", "service": "voice-analyzer", "version": "1.1.0"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
