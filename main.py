@@ -585,6 +585,8 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
                 "status": "Could not detect pitch"
             }
         
+        f0_contour = f0_values[::10].tolist()
+
         return {
             "mean": float(np.mean(f0_values)),
             "std": float(np.std(f0_values)),
