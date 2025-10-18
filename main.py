@@ -249,6 +249,12 @@ async def analyze_voice(file: UploadFile = File(...)):
         if original_duration > MAX_DURATION_SECONDS:
             metadata["note"] = f"Original file was {original_duration:.1f}s. Analysis performed on first {MAX_DURATION_SECONDS}s for memory optimization."
         
+        # Extract F0 contour
+        f0_values = []
+        for frame in sound.to_pitch().selected_array['frequency']:
+            if frame > 0:  # Voiced frames only
+                f0_values.append(frame)
+                
         return AnalysisResult(
             f0=f0_data,
             jitter=jitter_data,
@@ -586,6 +592,7 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
             "max": float(np.max(f0_values)),
             "percentile_5": float(np.percentile(f0_values, 5)),
             "percentile_95": float(np.percentile(f0_values, 95)),
+            "contour": f0_contour,  # ← ADD THIS LINE
             "status": get_f0_status(float(np.mean(f0_values)))
         }
     except Exception as e:
