@@ -584,14 +584,18 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
                 "max": 0,
                 "status": "Could not detect pitch"
             }
+
+        # ADD THIS LINE:
         f0_contour = f0_values[::10].tolist()
+        
         return {
             "mean": float(np.mean(f0_values)),
             "std": float(np.std(f0_values)),
             "min": float(np.min(f0_values)),
             "max": float(np.max(f0_values)),
             "percentile_5": float(np.percentile(f0_values, 5)),
-            "percentile_95": float(np.percentile(f0_values, 5)),
+            "percentile_95": float(np.percentile(f0_values, 95)),
+            "contour": f0_contour,  # ADD THIS LINE
             "status": get_f0_status(float(np.mean(f0_values)))
         }
     except Exception as e:
