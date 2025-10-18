@@ -59,7 +59,7 @@ TARGET_SAMPLE_RATE = 16000  # Downsample to 16kHz (sufficient for voice analysis
 
 class AnalysisResult(BaseModel):
     """Response model for voice analysis"""
-    f0: Dict[str, Union[float, str]]
+    f0: Dict[str, Union[float, str, List[float]]]
     jitter: Dict[str, Union[float, str]]
     shimmer: Dict[str, Union[float, str]]
     hnr: Dict[str, Union[float, str]]
@@ -597,7 +597,7 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     except Exception as e:
         return {"error": str(e), "status": "Analysis failed"}
     
-    
+
 def analyze_jitter(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
     """Calculate jitter parameters"""
     try:
