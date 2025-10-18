@@ -569,7 +569,7 @@ async def get_feedback_stats():
 
 # ===== ANALYSIS HELPER FUNCTIONS =====
 
-def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
+def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str, List[float]]]:
     """Extract fundamental frequency statistics"""
     try:
         pitch = sound.to_pitch()
@@ -585,8 +585,9 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
                 "status": "Could not detect pitch"
             }
         
+        # Downsample contour for efficiency
         f0_contour = f0_values[::10].tolist()
-
+        
         return {
             "mean": float(np.mean(f0_values)),
             "std": float(np.std(f0_values)),
@@ -594,10 +595,11 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
             "max": float(np.max(f0_values)),
             "percentile_5": float(np.percentile(f0_values, 5)),
             "percentile_95": float(np.percentile(f0_values, 95)),
-            "contour": f0_contour,  # ← ADD THIS LINE
+            "contour": f0_contour,
             "status": get_f0_status(float(np.mean(f0_values)))
         }
     except Exception as e:
+        logger.error(f"F0 analysis error: {str(e)}")
         return {"error": str(e), "status": "Analysis failed"}
 
 def analyze_jitter(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
