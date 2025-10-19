@@ -77,6 +77,7 @@ class FeedbackSubmission(BaseModel):
 
 class PDFRequest(BaseModel):
     """Model for PDF generation request"""
+    report_type: Optional[str] = "voice"  # ADD THIS LINE
     analysis_results: AnalysisResult
     patient_info: Optional[Dict[str, str]] = None
 
@@ -297,11 +298,13 @@ async def generate_pdf_report(request: PDFRequest):
     Returns:
     - PDF file as downloadable stream
     """
+
     try:
         logger.info("Generating PDF report...")
         
         # Determine report type
-        report_type = request.dict().get('report_type', 'voice')  # 'voice' or 'pitch'
+        report_type = request.report_type or "voice"  # Use this instead
+        logger.info(f"Report type: {report_type}")  # Debug log
         
         # Create PDF in memory
         buffer = io.BytesIO()
