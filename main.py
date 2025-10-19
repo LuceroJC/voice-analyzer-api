@@ -300,6 +300,9 @@ async def generate_pdf_report(request: PDFRequest):
     try:
         logger.info("Generating PDF report...")
         
+        # Determine report type
+        report_type = request.dict().get('report_type', 'voice')  # 'voice' or 'pitch'
+        
         # Create PDF in memory
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -327,8 +330,12 @@ async def generate_pdf_report(request: PDFRequest):
             spaceBefore=12
         )
         
-        # Title
-        elements.append(Paragraph("Voice Analysis Report", title_style))
+        # Title based on report type
+        if report_type == 'pitch':
+            elements.append(Paragraph("Pitch Analysis Report", title_style))
+        else:
+            elements.append(Paragraph("Voice Analysis Report", title_style))
+            
         elements.append(Paragraph("Phonalab", 
             ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=12, 
                           textColor=colors.HexColor('#6b7280'), alignment=TA_CENTER)))
@@ -354,117 +361,149 @@ async def generate_pdf_report(request: PDFRequest):
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         elements.append(info_table)
-
-        # Add patient info if provided
-        if request.patient_info and any(request.patient_info.values() if isinstance(request.patient_info, dict) else []):
-            elements.append(Spacer(1, 0.2*inch))
-            elements.append(Paragraph("Patient Information", heading_style))
-            patient_data = [[k.replace('_', ' ').title() + ':', v] for k, v in request.patient_info.items() if v]
-            if patient_data:
-                patient_table = Table(patient_data, colWidths=[2*inch, 4*inch])
-                patient_table.setStyle(TableStyle([
-                    ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
-                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ]))
-                elements.append(patient_table)
-
         elements.append(Spacer(1, 0.3*inch))
-        
-        # Acoustic Parameters
-        elements.append(Paragraph("Acoustic Measurements", heading_style))
         
         results = request.analysis_results
         
-        # F0
-        f0_data = [
-            ["Parameter", "Value", "Status"],
-            ["Mean F0", f"{results.f0.get('mean', 0):.1f} Hz", results.f0.get('status', 'N/A')],
-            ["F0 Range", f"{results.f0.get('min', 0):.1f} - {results.f0.get('max', 0):.1f} Hz", ""],
-            ["F0 Std Dev", f"{results.f0.get('std', 0):.1f} Hz", ""],
-        ]
-        
-        # Jitter
-        jitter_data = [
-            ["Jitter (Local)", f"{results.jitter.get('local', 0):.4f}", results.jitter.get('status', 'N/A')],
-            ["Jitter (%)", f"{results.jitter.get('percent', 0):.2f}%", ""],
-            ["RAP", f"{results.jitter.get('rap', 0):.4f}", ""],
-        ]
-        
-        # Shimmer
-        shimmer_data = [
-            ["Shimmer (Local)", f"{results.shimmer.get('local', 0):.4f}", results.shimmer.get('status', 'N/A')],
-            ["Shimmer (%)", f"{results.shimmer.get('percent', 0):.2f}%", ""],
-            ["APQ3", f"{results.shimmer.get('apq3', 0):.4f}", ""],
-        ]
-        
-        # HNR
-        hnr_data = [
-            ["Mean HNR", f"{results.hnr.get('mean', 0):.1f} dB", results.hnr.get('status', 'N/A')],
-            ["HNR Range", f"{results.hnr.get('min', 0):.1f} - {results.hnr.get('max', 0):.1f} dB", ""],
-        ]
-        
-        # CPP
-        cpp_data = [
-            ["CPP (Smoothed)", f"{results.cpp.get('value', 0):.2f} dB", results.cpp.get('status', 'N/A')],
-        ]
-        
-        # Combine all measurements
-        all_data = [["Parameter", "Value", "Status"]] + f0_data[1:] + jitter_data + shimmer_data + hnr_data + cpp_data
-        
-        measurements_table = Table(all_data, colWidths=[2*inch, 1.5*inch, 2.5*inch])
-        measurements_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 11),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
-        ]))
-        elements.append(measurements_table)
-        elements.append(Spacer(1, 0.3*inch))
-        
-        # Clinical Interpretation
-        elements.append(Paragraph("Clinical Interpretation", heading_style))
-        
-        interpretation = results.interpretation
-        elements.append(Paragraph(
-            f"<b>Overall Assessment:</b> {interpretation.get('overall_assessment', 'N/A')}", 
-            styles['Normal']
-        ))
-        elements.append(Spacer(1, 0.1*inch))
-        
-        elements.append(Paragraph(
-            f"<b>Severity:</b> {interpretation.get('severity', 'N/A').upper()}", 
-            styles['Normal']
-        ))
-        elements.append(Spacer(1, 0.2*inch))
-        
-        # Concerns
-        if interpretation.get('concerns'):
-            elements.append(Paragraph("<b>Clinical Concerns:</b>", styles['Normal']))
-            for concern in interpretation['concerns']:
-                elements.append(Paragraph(f"• {concern}", styles['Normal']))
+        if report_type == 'pitch':
+            # PITCH ANALYSIS REPORT
+            elements.append(Paragraph("Pitch Measurements", heading_style))
+            
+            pitch_data = [
+                ["Parameter", "Value"],
+                ["Mean Pitch", f"{results.f0.get('mean', 0):.1f} Hz"],
+                ["Minimum Pitch", f"{results.f0.get('min', 0):.1f} Hz"],
+                ["Maximum Pitch", f"{results.f0.get('max', 0):.1f} Hz"],
+                ["Pitch Range", f"{results.f0.get('max', 0) - results.f0.get('min', 0):.1f} Hz"],
+                ["Standard Deviation", f"{results.f0.get('std', 0):.1f} Hz"],
+            ]
+            
+            pitch_table = Table(pitch_data, colWidths=[3*inch, 3*inch])
+            pitch_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 11),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+            ]))
+            elements.append(pitch_table)
+            elements.append(Spacer(1, 0.3*inch))
+            
+            # Gender Perception
+            elements.append(Paragraph("Gender Perception Assessment", heading_style))
+            f0_mean = results.f0.get('mean', 0)
+            
+            if f0_mean < 145:
+                category = "Typical Male Range"
+                description = "This pitch falls within the typical male speaking voice range (85-180 Hz) and is generally perceived as masculine."
+            elif f0_mean >= 145 and f0_mean < 165:
+                category = "Androgynous Range"
+                description = "This pitch falls within the androgynous range (145-165 Hz), which is perceived as gender-neutral or ambiguous by most listeners."
+            else:
+                category = "Typical Female Range"
+                description = "This pitch falls within the typical female speaking voice range (165-255 Hz) and is generally perceived as feminine."
+            
+            elements.append(Paragraph(f"<b>Classification:</b> {category}", styles['Normal']))
+            elements.append(Spacer(1, 0.1*inch))
+            elements.append(Paragraph(description, styles['Normal']))
             elements.append(Spacer(1, 0.2*inch))
-        
-        # Recommendations
-        if interpretation.get('recommendations'):
-            elements.append(Paragraph("<b>Recommendations:</b>", styles['Normal']))
-            for rec in interpretation['recommendations']:
-                elements.append(Paragraph(f"• {rec}", styles['Normal']))
+            
+            # Clinical Notes
+            elements.append(Paragraph("Clinical Notes", heading_style))
+            notes = [
+                "Pitch is one of several factors in voice gender perception, alongside resonance, intonation patterns, and articulation.",
+                "For gender-affirming voice therapy, consistent practice and gradual changes are recommended.",
+                "This analysis reflects speaking pitch only and may differ from singing range.",
+            ]
+            for note in notes:
+                elements.append(Paragraph(f"• {note}", styles['Normal']))
+            
+        else:
+            # VOICE ANALYSIS REPORT (existing code)
+            elements.append(Paragraph("Acoustic Measurements", heading_style))
+            
+            f0_data = [
+                ["Parameter", "Value", "Status"],
+                ["Mean F0", f"{results.f0.get('mean', 0):.1f} Hz", results.f0.get('status', 'N/A')],
+                ["F0 Range", f"{results.f0.get('min', 0):.1f} - {results.f0.get('max', 0):.1f} Hz", ""],
+                ["F0 Std Dev", f"{results.f0.get('std', 0):.1f} Hz", ""],
+            ]
+            
+            jitter_data = [
+                ["Jitter (Local)", f"{results.jitter.get('local', 0):.4f}", results.jitter.get('status', 'N/A')],
+                ["Jitter (%)", f"{results.jitter.get('percent', 0):.2f}%", ""],
+                ["RAP", f"{results.jitter.get('rap', 0):.4f}", ""],
+            ]
+            
+            shimmer_data = [
+                ["Shimmer (Local)", f"{results.shimmer.get('local', 0):.4f}", results.shimmer.get('status', 'N/A')],
+                ["Shimmer (%)", f"{results.shimmer.get('percent', 0):.2f}%", ""],
+                ["APQ3", f"{results.shimmer.get('apq3', 0):.4f}", ""],
+            ]
+            
+            hnr_data = [
+                ["Mean HNR", f"{results.hnr.get('mean', 0):.1f} dB", results.hnr.get('status', 'N/A')],
+                ["HNR Range", f"{results.hnr.get('min', 0):.1f} - {results.hnr.get('max', 0):.1f} dB", ""],
+            ]
+            
+            cpp_data = [
+                ["CPP (Smoothed)", f"{results.cpp.get('value', 0):.2f} dB", results.cpp.get('status', 'N/A')],
+            ]
+            
+            all_data = [["Parameter", "Value", "Status"]] + f0_data[1:] + jitter_data + shimmer_data + hnr_data + cpp_data
+            
+            measurements_table = Table(all_data, colWidths=[2*inch, 1.5*inch, 2.5*inch])
+            measurements_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 11),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+            ]))
+            elements.append(measurements_table)
+            elements.append(Spacer(1, 0.3*inch))
+            
+            # Clinical Interpretation
+            elements.append(Paragraph("Clinical Interpretation", heading_style))
+            
+            interpretation = results.interpretation
+            elements.append(Paragraph(
+                f"<b>Overall Assessment:</b> {interpretation.get('overall_assessment', 'N/A')}", 
+                styles['Normal']
+            ))
+            elements.append(Spacer(1, 0.1*inch))
+            
+            elements.append(Paragraph(
+                f"<b>Severity:</b> {interpretation.get('severity', 'N/A').upper()}", 
+                styles['Normal']
+            ))
             elements.append(Spacer(1, 0.2*inch))
-        
-        # Clinical Action
-        elements.append(Paragraph(
-            f"<b>Suggested Action:</b> {interpretation.get('clinical_action', 'N/A')}", 
-            styles['Normal']
-        ))
+            
+            if interpretation.get('concerns'):
+                elements.append(Paragraph("<b>Clinical Concerns:</b>", styles['Normal']))
+                for concern in interpretation['concerns']:
+                    elements.append(Paragraph(f"• {concern}", styles['Normal']))
+                elements.append(Spacer(1, 0.2*inch))
+            
+            if interpretation.get('recommendations'):
+                elements.append(Paragraph("<b>Recommendations:</b>", styles['Normal']))
+                for rec in interpretation['recommendations']:
+                    elements.append(Paragraph(f"• {rec}", styles['Normal']))
+                elements.append(Spacer(1, 0.2*inch))
+            
+            elements.append(Paragraph(
+                f"<b>Suggested Action:</b> {interpretation.get('clinical_action', 'N/A')}", 
+                styles['Normal']
+            ))
         
         # Footer
         elements.append(Spacer(1, 0.5*inch))
@@ -484,11 +523,13 @@ async def generate_pdf_report(request: PDFRequest):
         logger.info("PDF generated successfully")
         
         # Return as downloadable file
+        filename = f"pitch_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf" if report_type == 'pitch' else f"voice_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        
         return StreamingResponse(
             buffer,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=voice_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                "Content-Disposition": f"attachment; filename={filename}"
             }
         )
         
@@ -496,7 +537,8 @@ async def generate_pdf_report(request: PDFRequest):
         logger.error(f"PDF generation error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
-
+    
+    
 @app.post("/feedback")
 async def submit_feedback(feedback: FeedbackSubmission):
     """
