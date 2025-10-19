@@ -569,7 +569,7 @@ async def get_feedback_stats():
 
 # ===== ANALYSIS HELPER FUNCTIONS =====
 
-def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
+def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str, List[float]]]:
     """Extract fundamental frequency statistics"""
     try:
         pitch = sound.to_pitch()
@@ -584,21 +584,37 @@ def analyze_f0(sound: parselmouth.Sound) -> Dict[str, Union[float, str]]:
                 "max": 0,
                 "status": "Could not detect pitch"
             }
-
-        # ADD THIS LINE:
-        f0_contour = f0_values[::10].tolist()
+        
+        # IMPROVED: Filter outliers using percentiles (like Praat does)
+        # This removes detection errors and octave jumps
+        f0_mean_raw = np.mean(f0_values)
+        f0_std_raw = np.std(f0_values)
+        
+        # Keep only values within 2.5 standard deviations (removes extreme outliers)
+        f0_filtered = f0_values[
+            (f0_values > f0_mean_raw - 2.5 * f0_std_raw) & 
+            (f0_values < f0_mean_raw + 2.5 * f0_std_raw)
+        ]
+        
+        # If too many values filtered, use original
+        if len(f0_filtered) < len(f0_values) * 0.5:
+            f0_filtered = f0_values
+        
+        # Use filtered values for statistics
+        f0_contour = f0_filtered[::10].tolist()
         
         return {
-            "mean": float(np.mean(f0_values)),
-            "std": float(np.std(f0_values)),
-            "min": float(np.min(f0_values)),
-            "max": float(np.max(f0_values)),
-            "percentile_5": float(np.percentile(f0_values, 5)),
-            "percentile_95": float(np.percentile(f0_values, 95)),
-            "contour": f0_contour,  # ADD THIS LINE
-            "status": get_f0_status(float(np.mean(f0_values)))
+            "mean": float(np.mean(f0_filtered)),
+            "std": float(np.std(f0_filtered)),
+            "min": float(np.min(f0_filtered)),  # Now more reliable
+            "max": float(np.max(f0_filtered)),  # Now more reliable
+            "percentile_5": float(np.percentile(f0_filtered, 5)),
+            "percentile_95": float(np.percentile(f0_filtered, 95)),
+            "contour": f0_contour,
+            "status": get_f0_status(float(np.mean(f0_filtered)))
         }
     except Exception as e:
+        logger.error(f"F0 analysis error: {str(e)}")
         return {"error": str(e), "status": "Analysis failed"}
     
 
